@@ -10,7 +10,7 @@ LINE_ACCESS_TOKEN = os.getenv("2006928117")
 LINE_SECRET = os.getenv("84262e42120bc8acb109d4f1a0fcb17b")
 
 line_bot_api = LineBotApi(2006928117)
-handler = WebhookHandler(84262e42120bc8acb109d4f1a0fcb17b)
+handler = WebhookHandler("84262e42120bc8acb109d4f1a0fcb17b")
 
 @app.route("/callback", methods=["POST"])
 def callback():
