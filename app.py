@@ -9,17 +9,17 @@ import pytz
 
 app = Flask(__name__)
 
-# Fetching LINE bot credentials from environment variables
-LINE_ACCESS_TOKEN = os.getenv("RfVeptwLWL4vUHd6k24I1eFMJMa2QgyI22GuPhXQ77OEkbTRgBvwI/QX+SgnF/1gP7XjeZcij+uONTTYT7Xb45tRYweHLmbqei6AhVqoxTP8n2ci3oRaVWXaV084nBWYg5MDP6tzzMqz0LVg5bAfWAdB04t89/1O/w1cDnyilFU=")
-LINE_SECRET = os.getenv("84262e42120bc8acb109d4f1a0fcb17b")
+# 🚨 Use your LINE credentials directly in the code (Not recommended for production)
+LINE_ACCESS_TOKEN = "RfVeptwLWL4vUHd6k24I1eFMJMa2QgyI22GuPhXQ77OEkbTRgBvwI/QX+SgnF/1gP7XjeZcij+uONTTYT7Xb45tRYweHLmbqei6AhVqoxTP8n2ci3oRaVWXaV084nBWYg5MDP6tzzMqz0LVg5bAfWAdB04t89/1O/w1cDnyilFU="
+LINE_SECRET = "84262e42120bc8acb109d4f1a0fcb17b"
 
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_SECRET)
 
 # Store user IDs of people who interacted with the bot
-user_ids = set()  # Using a set to avoid duplicates
+user_ids = set()
 
-# Set timezone for scheduled messages (e.g., Bangkok time)
+# Set timezone for scheduled messages (Bangkok Time)
 timezone = pytz.timezone("Asia/Bangkok")
 scheduler = BackgroundScheduler(timezone=timezone)
 
@@ -30,8 +30,8 @@ def send_scheduled_message():
         line_bot_api.push_message(user_id, TextSendMessage(text=message))
     print(f"Scheduled message sent at {datetime.now(timezone)}")
 
-# Schedule the message (Set it to send at 10:27 AM every day)
-scheduler.add_job(send_scheduled_message, 'cron', hour=10, minute=27)
+# Schedule the message (Set it to send at 10:27 AM)
+scheduler.add_job(send_scheduled_message, 'cron', hour=22, minute=39)
 scheduler.start()
 
 @app.route("/callback", methods=["POST"])
