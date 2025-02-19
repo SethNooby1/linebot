@@ -47,7 +47,7 @@ def check_and_send_scheduled_messages():
     current_time = now.time()
 
     # Check if it's 18:35 in Bangkok time
-    if time(18, 35) <= current_time <= time(18, 36):
+    if time(18, 47) <= current_time <= time(18, 48):
         # Broadcasting the message to all users
         line_bot_api.broadcast(TextSendMessage(text="testestesticle"))
 
