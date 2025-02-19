@@ -9,7 +9,7 @@ from datetime import datetime, time
 app = Flask(__name__)
 
 # Replace these with your actual credentials
-LINE_ACCESS_TOKEN = "2006928117"
+LINE_ACCESS_TOKEN = "RfVeptwLWL4vUHd6k24I1eFMJMa2QgyI22GuPhXQ77OEkbTRgBvwI/QX+SgnF/1gP7XjeZcij+uONTTYT7Xb45tRYweHLmbqei6AhVqoxTP8n2ci3oRaVWXaV084nBWYg5MDP6tzzMqz0LVg5bAfWAdB04t89/1O/w1cDnyilFU="
 LINE_SECRET = "84262e42120bc8acb109d4f1a0fcb17b"
 
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
@@ -49,7 +49,7 @@ def check_and_send_scheduled_messages():
     current_time = now.time()
     print("Current time:", current_time)
 
-    if time(19, 5) <= current_time <= time(19, 6):
+    if time(22, 15) <= current_time <= time(19, 16):
         print("Sending scheduled message")
         line_bot_api.broadcast(TextSendMessage(text="testestesticle"))
 
