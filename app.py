@@ -32,6 +32,7 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
+    print("Received message event:", event)
     user_message = event.message.text.lower()
     
     if user_message == "hi":
@@ -39,16 +40,17 @@ def handle_message(event):
     else:
         reply_text = "I'm sorry, I don't understand that. Type 'hi' for a test reply."
     
+    print("Attempting to reply with:", reply_text)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
 # Function to check and send scheduled messages
 def check_and_send_scheduled_messages():
     now = datetime.now(BANGKOK_TIMEZONE)
     current_time = now.time()
+    print("Current time:", current_time)
 
-    # Check if it's 18:35 in Bangkok time
-    if time(18, 47) <= current_time <= time(18, 48):
-        # Broadcasting the message to all users
+    if time(19, 05) <= current_time <= time(19, 06):
+        print("Sending scheduled message")
         line_bot_api.broadcast(TextSendMessage(text="testestesticle"))
 
 # This function would need to be called periodically to check the time
