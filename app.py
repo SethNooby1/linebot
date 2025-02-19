@@ -49,7 +49,7 @@ def check_and_send_scheduled_messages():
     current_time = now.time()
     print("Current time:", current_time)
 
-    if time(19, 05) <= current_time <= time(19, 06):
+    if time(19, 5) <= current_time <= time(19, 6):
         print("Sending scheduled message")
         line_bot_api.broadcast(TextSendMessage(text="testestesticle"))
 
