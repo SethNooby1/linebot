@@ -3,14 +3,20 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import os
+import pytz
+from datetime import datetime, time
 
 app = Flask(__name__)
 
-LINE_ACCESS_TOKEN = os.getenv("2006928117")
-LINE_SECRET = os.getenv("84262e42120bc8acb109d4f1a0fcb17b")
+# Replace these with your actual credentials
+LINE_ACCESS_TOKEN = "2006928117"
+LINE_SECRET = "84262e42120bc8acb109d4f1a0fcb17b"
 
-line_bot_api = LineBotApi("2006928117")
-handler = WebhookHandler("84262e42120bc8acb109d4f1a0fcb17b")
+line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_SECRET)
+
+# Set your desired time zone
+BANGKOK_TIMEZONE = pytz.timezone('Asia/Bangkok')
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -27,9 +33,32 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_message = event.message.text.lower()
-    reply_text = "Hello! You said: " + user_message
+    
+    if user_message == "hi":
+        reply_text = "hihiihihihihii"
+    else:
+        reply_text = "I'm sorry, I don't understand that. Type 'hi' for a test reply."
+    
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+
+# Function to check and send scheduled messages
+def check_and_send_scheduled_messages():
+    now = datetime.now(BANGKOK_TIMEZONE)
+    current_time = now.time()
+
+    # Check if it's 18:35 in Bangkok time
+    if time(18, 35) <= current_time <= time(18, 36):
+        # Broadcasting the message to all users
+        line_bot_api.broadcast(TextSendMessage(text="testestesticle"))
+
+# This function would need to be called periodically to check the time
+# For testing, you might want to call this manually or use a scheduler like APScheduler if you deploy this
+# Here's a simple way to call it manually for testing:
+
+@app.route("/test_schedule", methods=["GET"])
+def test_schedule():
+    check_and_send_scheduled_messages()
+    return "Scheduled message check executed."
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
