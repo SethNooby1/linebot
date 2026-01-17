@@ -142,8 +142,8 @@ def hf_chat(messages: List[dict], max_tokens: int = 140, temperature: float = 0.
             data = r.json()
             return (data["choices"][0]["message"]["content"] or "").strip()
         except Exception as e:
+            print("HF hf_chat error:", repr(e))
             last_err = e
-            # retry once
             if attempt < HF_MAX_RETRIES:
                 continue
             raise last_err
