@@ -57,8 +57,6 @@ def admin_broadcast():
 
     return {"ok": True, "sent": sent, "failed": failed, "known_users": len(user_ids)}, 200
 
-print("DEBUG user_id:", event.source.user_id)
-
 # OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
