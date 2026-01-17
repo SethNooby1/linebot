@@ -30,6 +30,33 @@ if not LINE_ACCESS_TOKEN or not LINE_SECRET:
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_SECRET)
 
+ADMIN_KEY = os.getenv("ADMIN_KEY", "")
+
+@app.route("/admin/broadcast", methods=["POST"])
+def admin_broadcast():
+    # Simple auth
+    key = request.headers.get("X-Admin-Key", "")
+    if not ADMIN_KEY or key != ADMIN_KEY:
+        abort(403)
+
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "error": "Missing 'text' in JSON body"}, 400
+
+    sent = 0
+    failed = 0
+
+    for uid in list(user_ids):
+        try:
+            line_bot_api.push_message(uid, TextSendMessage(text=text))
+            sent += 1
+        except Exception as e:
+            print("Broadcast push failed:", uid, repr(e))
+            failed += 1
+
+    return {"ok": True, "sent": sent, "failed": failed, "known_users": len(user_ids)}, 200
+
 # OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
