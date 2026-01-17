@@ -33,7 +33,7 @@ handler = WebhookHandler(LINE_SECRET)
 # Hugging Face Router (OpenAI-compatible)
 HF_API_KEY = os.getenv("HF_API_KEY")
 HF_BASE_URL = os.getenv("HF_BASE_URL", "https://router.huggingface.co/v1")
-HF_MODEL_ID = os.getenv("HF_MODEL_ID")  # e.g. meta-llama/Llama-3.1-8B-Instruct:novita
+HF_MODEL_ID = os.getenv("HF_MODEL_ID")  # e.g. meta-llama/Llama-3.1-8B-Instruct:fireworks
 
 if not HF_API_KEY or not HF_MODEL_ID:
     raise ValueError("❌ Missing HF_API_KEY or HF_MODEL_ID in environment variables")
@@ -41,6 +41,10 @@ if not HF_API_KEY or not HF_MODEL_ID:
 # Behavior tuning
 ROUTER_CONFIDENCE_THRESHOLD = float(os.getenv("ROUTER_CONFIDENCE_THRESHOLD", "0.65"))
 MAX_RECENT_PER_GROUP = int(os.getenv("MAX_RECENT_PER_GROUP", "10"))
+
+# Timeouts / retries
+HF_TIMEOUT_SECONDS = int(os.getenv("HF_TIMEOUT_SECONDS", "45"))  # Fireworks sometimes slower
+HF_MAX_RETRIES = int(os.getenv("HF_MAX_RETRIES", "1"))          # retry once on transient errors
 
 # Timezone + scheduler
 timezone = pytz.timezone("Asia/Bangkok")
@@ -115,6 +119,7 @@ def hf_chat(messages: List[dict], max_tokens: int = 140, temperature: float = 0.
     """
     Calls Hugging Face Router OpenAI-compatible chat completions endpoint.
     Returns assistant content string.
+    Retries once on transient errors/timeouts.
     """
     url = f"{HF_BASE_URL}/chat/completions"
     headers = {
@@ -128,12 +133,20 @@ def hf_chat(messages: List[dict], max_tokens: int = 140, temperature: float = 0.
         "temperature": temperature,
     }
 
-    r = requests.post(url, headers=headers, json=payload, timeout=35)
-    if r.status_code != 200:
-        raise RuntimeError(f"HF error {r.status_code}: {r.text}")
-
-    data = r.json()
-    return (data["choices"][0]["message"]["content"] or "").strip()
+    last_err = None
+    for attempt in range(HF_MAX_RETRIES + 1):
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=HF_TIMEOUT_SECONDS)
+            if r.status_code != 200:
+                raise RuntimeError(f"HF error {r.status_code}: {r.text}")
+            data = r.json()
+            return (data["choices"][0]["message"]["content"] or "").strip()
+        except Exception as e:
+            last_err = e
+            # retry once
+            if attempt < HF_MAX_RETRIES:
+                continue
+            raise last_err
 
 
 def _safe_json_load(s: str) -> Optional[dict]:
@@ -149,14 +162,24 @@ def _safe_json_load(s: str) -> Optional[dict]:
         return None
 
 
+# Thai output filter (prevents weird mixed-language replies)
+_thai_char_re = re.compile(r"[ก-๙]")
+_non_thai_heavy_re = re.compile(r"[A-Za-z\u4e00-\u9fff]")  # English + CJK
+
+def looks_weird(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    if not _thai_char_re.search(t):
+        return True
+    non_thai = len(_non_thai_heavy_re.findall(t))
+    return non_thai >= 3
+
+
 # =========================
 # Router: choose group
 # =========================
 def route_group(user_text: str) -> Tuple[str, float]:
-    """
-    Returns (match_group, confidence). match_group in ALLOWED_GROUPS or "none".
-    Uses HF model, JSON-only output.
-    """
     system = (
         "You are a strict classifier for a LINE chat bot.\n"
         "Return ONLY valid JSON with keys: match_group (string) and confidence (number 0..1).\n"
@@ -189,7 +212,6 @@ def route_group(user_text: str) -> Tuple[str, float]:
         return (mg, conf)
 
     except Exception:
-        # If HF fails, don’t crash the webhook
         return ("none", 0.0)
 
 
@@ -197,10 +219,11 @@ def route_group(user_text: str) -> Tuple[str, float]:
 # Writer (always new)
 # =========================
 PERSONA_SYSTEM = (
-    "คุณคือบอทแชทใน LINE ที่คุยภาษาไทยเท่านั้น\n"
+    "คุณคือบอทแชทใน LINE\n"
+    "ตอบภาษาไทยเท่านั้น\n"
     "โทน: น่ารัก กวนๆ หยอดๆ ขี้เล่น อบอุ่นบ้าง แซวบ้าง\n"
     "คำติดปาก/สไตล์: ค้าบ, อ้วนๆ, จุ๊บมั๊ว, หื้มม, งงง, น้าาา (ใช้ได้ตามเหมาะ)\n"
-    "ห้ามพูดภาษาอื่น ห้ามปนจีน/อังกฤษ (ยกเว้นชื่อเฉพาะที่ผู้ใช้พิมพ์มา)\n"
+    "ห้ามปนภาษาอังกฤษ/จีน/ญี่ปุ่น\n"
     "ห้ามบอกว่าตัวเองเป็น AI และห้ามอธิบายระบบ\n"
     "ถ้าผู้ใช้ถามคำถามจริงจัง ให้ตอบให้เป็นประโยชน์ แต่ยังคุมโทนให้น่ารักได้\n"
 )
@@ -212,11 +235,6 @@ def remember_recent(store: Dict[str, List[str]], key: str, text: str):
 
 
 def generate_reply(user_text: str, match_group: str, confidence: float) -> str:
-    """
-    Always brand-new. Flexible length:
-    - Short playful by default
-    - If user asks a real question, answer normally (still in style)
-    """
     recent = recent_by_group.get(match_group, []) if match_group != "none" else []
     refs = GROUPS.get(match_group, []) if match_group != "none" else []
 
@@ -240,10 +258,7 @@ def generate_reply(user_text: str, match_group: str, confidence: float) -> str:
             f"{ref_snippet}\n"
         )
     else:
-        prompt = (
-            f"{user_instruction}\n"
-            "จับคู่กลุ่มไม่ได้หรือความมั่นใจต่ำ: ตอบแบบคุยอิสระตามสไตล์\n"
-        )
+        prompt = f"{user_instruction}\nจับคู่กลุ่มไม่ได้หรือความมั่นใจต่ำ: ตอบแบบคุยอิสระตามสไตล์\n"
 
     if avoid_snippet:
         prompt += (
@@ -259,15 +274,29 @@ def generate_reply(user_text: str, match_group: str, confidence: float) -> str:
                 {"role": "system", "content": PERSONA_SYSTEM},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=180,         # flexible but still budget-friendly
+            max_tokens=180,
             temperature=0.9,
-        )
-        out = out.strip()
+        ).strip()
+
+        # Retry once if output looks weird
+        if looks_weird(out):
+            stricter = PERSONA_SYSTEM + "\nกฎเพิ่ม: ห้ามมีภาษาอื่นแม้แต่ตัวเดียว ให้พิมพ์ทับศัพท์ไทยแทน\n"
+            out = hf_chat(
+                messages=[
+                    {"role": "system", "content": stricter},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=180,
+                temperature=0.5,
+            ).strip()
+
         if not out:
             return "หื้มม พิมพ์มาใหม่ได้มะ เค้าอ่านไม่ทันง้าบบ 😳"
+        if looks_weird(out):
+            return "หื้มม พิมพ์มาใหม่อีกทีได้มะค้าบบ เค้าขอแบบไทยล้วนๆน้าา 😳"
         return out
+
     except Exception:
-        # fallback (never 500)
         return "หื้มม วันนี้เค้าตอบช้านิดนึงง ขอพิมพ์ใหม่อีกทีได้มะค้าบ 🥺"
 
 
@@ -328,6 +357,9 @@ def generate_scheduled_text(schedule_id: str, meaning: str, examples: List[str])
             temperature=0.95,
         ).strip()
 
+        if looks_weird(out):
+            out = examples[0]
+
         if not out:
             out = examples[0]
 
@@ -387,17 +419,15 @@ def handle_message(event):
     user_id = event.source.user_id
     user_ids.add(user_id)
 
-    # Keep original menu for "งง"
+    # keep original menu for งง
     if user_text.lower() == "งง":
         reply_text = responses.get("งง", "พิมพ์ “งง” เพื่อดูคำที่ใช้ได้น้าค้าบ")
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
         return
 
-    # AI route → write
     mg, conf = route_group(user_text)
     reply_text = generate_reply(user_text, mg, conf)
 
-    # remember recent only when confident group match
     if mg != "none" and conf >= ROUTER_CONFIDENCE_THRESHOLD:
         remember_recent(recent_by_group, mg, reply_text)
 
