@@ -30,6 +30,9 @@ if not LINE_ACCESS_TOKEN or not LINE_SECRET:
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_SECRET)
 
+# Store user IDs (NOTE: in-memory; resets on redeploy)
+user_ids = set()
+
 ADMIN_KEY = os.getenv("ADMIN_KEY", "")
 
 @app.route("/admin/broadcast", methods=["POST"])
@@ -69,9 +72,6 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 MAX_RECENT = int(os.getenv("MAX_RECENT", "12"))
 timezone = pytz.timezone("Asia/Bangkok")
 scheduler = BackgroundScheduler(timezone=timezone)
-
-# Store user IDs (NOTE: in-memory; resets on redeploy)
-user_ids = set()
 
 # Recent outputs to avoid repeating (NOTE: in-memory; resets on redeploy)
 recent_user_replies: List[str] = []
@@ -304,7 +304,7 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    print("DEBUG user_id:", event.source.user_id)
+    print("DEBUG user_id:", event.source.user_id, flush=True)
 
     user_text = (event.message.text or "").strip()
     user_id = event.source.user_id
