@@ -57,6 +57,8 @@ def admin_broadcast():
 
     return {"ok": True, "sent": sent, "failed": failed, "known_users": len(user_ids)}, 200
 
+print("DEBUG user_id:", event.source.user_id)
+
 # OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
@@ -318,7 +320,6 @@ def handle_message(event):
     remember_recent_list(recent_user_replies, reply_text)
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
