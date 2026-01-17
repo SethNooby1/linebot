@@ -2,5 +2,4 @@ flask
 line-bot-sdk
 apscheduler
 pytz
-openai
-gunicorn
+requests

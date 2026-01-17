@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
 import pytz
+import requests
 from flask import Flask, request, abort
 
 from linebot import LineBotApi, WebhookHandler
@@ -13,8 +14,6 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 from apscheduler.schedulers.background import BackgroundScheduler
-
-from openai import OpenAI
 
 
 # =========================
@@ -31,16 +30,13 @@ if not LINE_ACCESS_TOKEN or not LINE_SECRET:
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_SECRET)
 
-# OpenAI
-# Official SDK reads OPENAI_API_KEY automatically, but we still validate for clearer error
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise ValueError("❌ Missing OPENAI_API_KEY in environment variables")
+# Hugging Face Router (OpenAI-compatible)
+HF_API_KEY = os.getenv("HF_API_KEY")
+HF_BASE_URL = os.getenv("HF_BASE_URL", "https://router.huggingface.co/v1")
+HF_MODEL_ID = os.getenv("HF_MODEL_ID")  # e.g. meta-llama/Llama-3.1-8B-Instruct:novita
 
-client = OpenAI()
-
-ROUTER_MODEL = os.getenv("OPENAI_ROUTER_MODEL", "gpt-5-mini")
-WRITER_MODEL = os.getenv("OPENAI_WRITER_MODEL", "gpt-5-mini")
+if not HF_API_KEY or not HF_MODEL_ID:
+    raise ValueError("❌ Missing HF_API_KEY or HF_MODEL_ID in environment variables")
 
 # Behavior tuning
 ROUTER_CONFIDENCE_THRESHOLD = float(os.getenv("ROUTER_CONFIDENCE_THRESHOLD", "0.65"))
@@ -104,23 +100,46 @@ def build_groups(resp: Dict[str, str]) -> Dict[str, List[str]]:
     for k, v in resp.items():
         b = base_key(k)
         groups.setdefault(b, []).append(v)
-    # Shuffle inside groups so references aren’t always same order
     for g in groups:
         random.shuffle(groups[g])
     return groups
 
 GROUPS = build_groups(responses)
-ALLOWED_GROUPS = sorted(GROUPS.keys())  # router menu
+ALLOWED_GROUPS = sorted(GROUPS.keys())
 
 
 # =========================
-# OpenAI: Router (choose group)
+# HF Router: helper
 # =========================
+def hf_chat(messages: List[dict], max_tokens: int = 140, temperature: float = 0.7) -> str:
+    """
+    Calls Hugging Face Router OpenAI-compatible chat completions endpoint.
+    Returns assistant content string.
+    """
+    url = f"{HF_BASE_URL}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {HF_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": HF_MODEL_ID,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    r = requests.post(url, headers=headers, json=payload, timeout=35)
+    if r.status_code != 200:
+        raise RuntimeError(f"HF error {r.status_code}: {r.text}")
+
+    data = r.json()
+    return (data["choices"][0]["message"]["content"] or "").strip()
+
+
 def _safe_json_load(s: str) -> Optional[dict]:
     try:
         return json.loads(s)
     except Exception:
-        # Try to extract a JSON object if model added extra text
         m = re.search(r"\{.*\}", s, flags=re.DOTALL)
         if m:
             try:
@@ -129,49 +148,60 @@ def _safe_json_load(s: str) -> Optional[dict]:
                 return None
         return None
 
+
+# =========================
+# Router: choose group
+# =========================
 def route_group(user_text: str) -> Tuple[str, float]:
     """
     Returns (match_group, confidence). match_group in ALLOWED_GROUPS or "none".
+    Uses HF model, JSON-only output.
     """
-    router_instructions = (
+    system = (
         "You are a strict classifier for a LINE chat bot.\n"
         "Return ONLY valid JSON with keys: match_group (string) and confidence (number 0..1).\n"
         f"Allowed match_group values: {ALLOWED_GROUPS + ['none']}\n"
-        "Pick the closest group by meaning, even if the user uses slang/typos/elongations.\n"
+        "Pick the closest group by meaning, even if the user uses Thai slang/typos/elongations.\n"
         "If nothing fits, return match_group='none'.\n"
         "No extra text."
     )
 
-    r = client.responses.create(
-        model=ROUTER_MODEL,
-        input=user_text,
-        instructions=router_instructions,
-    )
+    try:
+        raw = hf_chat(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_text},
+            ],
+            max_tokens=80,
+            temperature=0.0,
+        )
+        data = _safe_json_load(raw)
+        if not data:
+            return ("none", 0.0)
 
-    # SDK returns a structured response; simplest reliable extraction is output_text
-    raw = getattr(r, "output_text", "") or ""
-    data = _safe_json_load(raw)
+        mg = str(data.get("match_group", "none"))
+        conf = float(data.get("confidence", 0.0) or 0.0)
 
-    if not data:
+        if mg not in ALLOWED_GROUPS and mg != "none":
+            return ("none", 0.0)
+
+        conf = max(0.0, min(1.0, conf))
+        return (mg, conf)
+
+    except Exception:
+        # If HF fails, don’t crash the webhook
         return ("none", 0.0)
-
-    mg = str(data.get("match_group", "none"))
-    conf = float(data.get("confidence", 0.0) or 0.0)
-
-    if mg not in ALLOWED_GROUPS and mg != "none":
-        return ("none", 0.0)
-
-    conf = max(0.0, min(1.0, conf))
-    return (mg, conf)
 
 
 # =========================
-# OpenAI: Writer (always new)
+# Writer (always new)
 # =========================
-PERSONA = (
-    "สไตล์การคุย: ไทย น่ารัก กวนๆ หยอดๆ ขี้เล่น อบอุ่นบ้าง แซวบ้าง\n"
-    "ชอบใช้คำลากเสียง เช่น งงง น้าาา หื้มมม และคำติดปากแบบ ค้าบ, อ้วนๆ, จุ๊บมั๊ว\n"
-    "ไม่ต้องพูดว่าตัวเองเป็น AI และไม่ต้องอธิบายระบบ\n"
+PERSONA_SYSTEM = (
+    "คุณคือบอทแชทใน LINE ที่คุยภาษาไทยเท่านั้น\n"
+    "โทน: น่ารัก กวนๆ หยอดๆ ขี้เล่น อบอุ่นบ้าง แซวบ้าง\n"
+    "คำติดปาก/สไตล์: ค้าบ, อ้วนๆ, จุ๊บมั๊ว, หื้มม, งงง, น้าาา (ใช้ได้ตามเหมาะ)\n"
+    "ห้ามพูดภาษาอื่น ห้ามปนจีน/อังกฤษ (ยกเว้นชื่อเฉพาะที่ผู้ใช้พิมพ์มา)\n"
+    "ห้ามบอกว่าตัวเองเป็น AI และห้ามอธิบายระบบ\n"
     "ถ้าผู้ใช้ถามคำถามจริงจัง ให้ตอบให้เป็นประโยชน์ แต่ยังคุมโทนให้น่ารักได้\n"
 )
 
@@ -180,69 +210,71 @@ def remember_recent(store: Dict[str, List[str]], key: str, text: str):
     if len(store[key]) > MAX_RECENT_PER_GROUP:
         store[key] = store[key][-MAX_RECENT_PER_GROUP:]
 
+
 def generate_reply(user_text: str, match_group: str, confidence: float) -> str:
     """
-    Flexible length:
+    Always brand-new. Flexible length:
     - Short playful by default
     - If user asks a real question, answer normally (still in style)
-    Always brand-new, never copy references.
     """
     recent = recent_by_group.get(match_group, []) if match_group != "none" else []
     refs = GROUPS.get(match_group, []) if match_group != "none" else []
 
-    # Keep refs short so prompt isn’t huge
     ref_snippet = "\n".join([f"- {t}" for t in refs[:6]]) if refs else ""
-
     avoid_snippet = "\n".join([f"- {t}" for t in recent[-6:]]) if recent else ""
 
-    writer_instructions = (
-        PERSONA +
-        "\nข้อกำหนดสำคัญ:\n"
+    user_instruction = (
+        "ข้อกำหนดสำคัญ:\n"
         "- ต้องแต่งประโยคใหม่ทุกครั้ง ห้ามคัดลอกประโยคเดิมตรงๆ\n"
-        "- ถ้าเข้ากลุ่มที่จับคู่ได้ ให้ตอบ “ความหมายใกล้เคียง” กับตัวอย่าง แต่เปลี่ยนคำทั้งหมด\n"
+        "- ถ้าเข้ากลุ่มที่จับคู่ได้ ให้ตอบความหมายใกล้เคียงกับตัวอย่าง แต่เปลี่ยนคำทั้งหมด\n"
         "- ถ้าผู้ใช้ถามคำถาม ให้ตอบคำถามนั้นจริงๆ ไม่หลบคำถาม\n"
         "- ความยาวยืดหยุ่นตามข้อความผู้ใช้ (สั้นได้ ยาวได้ถ้าจำเป็น)\n"
+        "- ตอบเป็นภาษาไทยเท่านั้น\n"
     )
 
-    context = ""
     if match_group != "none" and confidence >= ROUTER_CONFIDENCE_THRESHOLD and ref_snippet:
-        context = (
-            f"\nกลุ่มที่จับคู่ได้: {match_group} (confidence={confidence:.2f})\n"
+        prompt = (
+            f"{user_instruction}\n"
+            f"กลุ่มที่จับคู่ได้: {match_group} (confidence={confidence:.2f})\n"
             "ตัวอย่างสไตล์/ความหมาย (ห้ามคัดลอกคำตรงๆ):\n"
             f"{ref_snippet}\n"
         )
     else:
-        context = "\nจับคู่กลุ่มไม่ได้หรือความมั่นใจต่ำ: ตอบแบบคุยอิสระตามสไตล์\n"
+        prompt = (
+            f"{user_instruction}\n"
+            "จับคู่กลุ่มไม่ได้หรือความมั่นใจต่ำ: ตอบแบบคุยอิสระตามสไตล์\n"
+        )
 
     if avoid_snippet:
-        context += (
+        prompt += (
             "\nประโยคล่าสุดที่เคยตอบ (พยายามอย่าให้ซ้ำโครงมาก):\n"
             f"{avoid_snippet}\n"
         )
 
-    prompt_input = (
-        f"{context}\n"
-        f"ข้อความผู้ใช้: {user_text}\n"
-        "ตอบกลับ:"
-    )
+    prompt += f"\nข้อความผู้ใช้: {user_text}\nตอบกลับ:"
 
-    r = client.responses.create(
-        model=WRITER_MODEL,
-        input=prompt_input,
-        instructions=writer_instructions,
-    )
-
-    out = (getattr(r, "output_text", "") or "").strip()
-    if not out:
-        out = "หื้มม พิมพ์มาใหม่ได้มะ เค้าอ่านไม่ทันง้าบบ 😳"
-    return out
+    try:
+        out = hf_chat(
+            messages=[
+                {"role": "system", "content": PERSONA_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=180,         # flexible but still budget-friendly
+            temperature=0.9,
+        )
+        out = out.strip()
+        if not out:
+            return "หื้มม พิมพ์มาใหม่ได้มะ เค้าอ่านไม่ทันง้าบบ 😳"
+        return out
+    except Exception:
+        # fallback (never 500)
+        return "หื้มม วันนี้เค้าตอบช้านิดนึงง ขอพิมพ์ใหม่อีกทีได้มะค้าบ 🥺"
 
 
 # =========================
 # Scheduled messages (AI rewrite)
 # =========================
 SCHEDULE_SLOTS = [
-    # (schedule_id, base_meaning, examples, hour, minute)
     ("morning", "ทักทายตอนเช้าแบบน่ารักกวนๆ", ["มอนิ่งงง ไออ้วนนน"], 6, 30),
     ("breakfast", "เตือนให้กินอะไรหน่อยแบบหยอดๆ", ["กินรายยางอ้วนน"], 8, 30),
     ("work", "ถามทำอะไรอยู่/เช็คอินแบบขี้เล่น", ["ทำรายอยู่วว"], 9, 30),
@@ -263,38 +295,50 @@ def generate_scheduled_text(schedule_id: str, meaning: str, examples: List[str])
     ex = "\n".join([f"- {t}" for t in examples[:3]])
     avoid = "\n".join([f"- {t}" for t in recent[-6:]]) if recent else ""
 
-    instructions = (
-        PERSONA +
-        "\nงานของคุณ:\n"
+    user_instruction = (
+        "งานของคุณ:\n"
         "- สร้างข้อความ 1 ข้อความสำหรับส่งตามเวลา (scheduled)\n"
         "- ต้องสื่อความหมายตามที่กำหนด\n"
         "- ใช้โทน/สไตล์คล้ายตัวอย่าง แต่ห้ามคัดลอกตรงๆ\n"
         "- ความยาวสั้นถึงกลาง (อย่ายาวเป็นพารากราฟ)\n"
         "- แต่งใหม่ทุกครั้ง\n"
+        "- ตอบเป็นภาษาไทยเท่านั้น\n"
     )
 
-    ctx = (
+    prompt = (
+        f"{user_instruction}\n"
         f"หัวข้อ/ความหมายที่ต้องการ: {meaning}\n"
         "ตัวอย่างสไตล์ (ห้ามคัดลอกตรงๆ):\n"
         f"{ex}\n"
     )
     if avoid:
-        ctx += (
+        prompt += (
             "\nข้อความล่าสุดที่เคยส่ง (พยายามอย่าซ้ำ):\n"
             f"{avoid}\n"
         )
+    prompt += "\nสร้างข้อความใหม่ 1 ข้อความ:"
 
-    r = client.responses.create(
-        model=WRITER_MODEL,
-        input=ctx + "\nสร้างข้อความใหม่ 1 ข้อความ:",
-        instructions=instructions,
-    )
+    try:
+        out = hf_chat(
+            messages=[
+                {"role": "system", "content": PERSONA_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=120,
+            temperature=0.95,
+        ).strip()
 
-    out = (getattr(r, "output_text", "") or "").strip()
-    if not out:
+        if not out:
+            out = examples[0]
+
+        remember_recent(recent_schedule, schedule_id, out)
+        return out
+
+    except Exception:
         out = examples[0]
-    remember_recent(recent_schedule, schedule_id, out)
-    return out
+        remember_recent(recent_schedule, schedule_id, out)
+        return out
+
 
 def send_scheduled(schedule_id: str, meaning: str, examples: List[str]):
     msg = generate_scheduled_text(schedule_id, meaning, examples)
@@ -302,7 +346,6 @@ def send_scheduled(schedule_id: str, meaning: str, examples: List[str]):
         try:
             line_bot_api.push_message(uid, TextSendMessage(text=msg))
         except Exception:
-            # If push fails (blocked user etc.), you might want to remove uid in a real DB
             pass
     print(f"[{datetime.now(timezone)}] Scheduled({schedule_id}) sent: {msg}")
 
@@ -344,17 +387,17 @@ def handle_message(event):
     user_id = event.source.user_id
     user_ids.add(user_id)
 
+    # Keep original menu for "งง"
+    if user_text.lower() == "งง":
+        reply_text = responses.get("งง", "พิมพ์ “งง” เพื่อดูคำที่ใช้ได้น้าค้าบ")
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+        return
+
     # AI route → write
     mg, conf = route_group(user_text)
+    reply_text = generate_reply(user_text, mg, conf)
 
-    # Special: if user types "งง" you might want to keep your original menu response
-    # If you want AI to still rewrite it, remove this block.
-    if user_text.strip().lower() == "งง":
-        reply_text = responses.get("งง")
-    else:
-        reply_text = generate_reply(user_text, mg, conf)
-
-    # remember recent by matched group (only if it was confident enough)
+    # remember recent only when confident group match
     if mg != "none" and conf >= ROUTER_CONFIDENCE_THRESHOLD:
         remember_recent(recent_by_group, mg, reply_text)
 
