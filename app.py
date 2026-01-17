@@ -306,6 +306,8 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
+    print("DEBUG user_id:", event.source.user_id)
+
     user_text = (event.message.text or "").strip()
     user_id = event.source.user_id
     user_ids.add(user_id)
